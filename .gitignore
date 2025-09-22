@@ -30,8 +30,6 @@ MANIFEST
 # Virtual environments
 .venv/
 venv/
-ENV/
-env/
 
 # PyInstaller
 *.manifest
@@ -54,12 +52,6 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
-
-# Environments
-.env
-.env.*
-.env.local
-.python-version
 
 # VSCode
 .vscode/

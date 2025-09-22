@@ -1,9 +1,7 @@
-"""Import all models here so that Base.metadata.create_all() can see them.
+from __future__ import annotations
 
-In larger projects, Alembic autogenerate uses this module to know models.
-"""
+from sqlalchemy.orm import DeclarativeBase
 
-from .base_class import Base  # noqa: F401
 
-# Ensure models are imported for metadata
-from app.models import education  # noqa: F401, E402
+class Base(DeclarativeBase):
+    pass
