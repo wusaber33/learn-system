@@ -417,6 +417,74 @@ async def create_user(
         ),
     )
 
+@router.post("/admin", response_model=UserWithInfoOut)
+async def create_user(
+    payload: UserCreateWithInfo,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis,Depends(get_redis)]
+):
+    # 基础唯一性检查：用户名在未软删除用户中唯一
+    db_user = await get_user_by_name(db, payload.name)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    # 事务性创建（避免嵌套 begin：SQLAlchemy 2.0 默认会自动开启事务）
+    try:
+        hashed = get_password_hash(payload.password)
+        new_user = User(
+            name=payload.name,
+            password=hashed,
+            role=payload.role,
+            status=payload.status,
+        )
+        db.add(new_user)
+        # 确保拿到 user.id
+        await db.flush()
+
+        info = payload.info
+        new_info = UserInfo(
+            user_id=new_user.id,
+            phone=info.phone,
+            email=info.email,
+            address=info.address or "",
+            avatar=info.avatar or "",
+            birthday=info.birthday,
+            status=1,
+        )
+        db.add(new_info)
+
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    # 刷新对象
+    await db.refresh(new_user)
+    await db.refresh(new_info)
+
+    # 维护ID集合，清空空值键
+    try:
+        await redis.sadd(KEY_USERS_SET, new_user.id)
+        await redis.delete(cache_key_user_null(new_user.id))
+    except Exception as e:
+        pass
+
+
+    return UserWithInfoOut(
+        id=str(new_user.id),
+        name=new_user.name,
+        role=int(new_user.role),
+        status=int(new_user.status),
+        info=UserInfoOut(
+            phone=new_info.phone,
+            email=new_info.email,
+            address=new_info.address,
+            avatar=new_info.avatar,
+            birthday=new_info.birthday,
+        ),
+    )
+
+
+
 @router.get("",response_model=UserWithInfoOut)
 async def get_user(
     user_id: UUID,
@@ -611,6 +679,7 @@ async def delete_user(
     try:
         # 软删除
         user.deleted_at = datetime.now()
+        user.deleted_by = current_user.id
         await db.commit()
     except Exception:
         await db.rollback()
