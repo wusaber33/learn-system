@@ -8,6 +8,7 @@ from app.router.question import router as question_router
 from app.config import get_settings
 from app.db.base import Base
 from app.db.session import engine
+from app.db.redis import init_redis, close_redis
 
 
 settings = get_settings()
@@ -21,7 +22,12 @@ async def on_startup() -> None:
     # For demo/dev: create tables automatically. In production, use Alembic migrations.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Init Redis
+    await init_redis()
 
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    await close_redis()
 @app.get("/health")
 def health_check():
     return {"status": "ok"}

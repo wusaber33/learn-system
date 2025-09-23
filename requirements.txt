@@ -8,3 +8,4 @@ pydantic-settings==2.6.0
 python-dotenv==1.0.1
 PyJWT==2.9.0
 passlib[bcrypt]==1.7.4
+redis==5.0.8

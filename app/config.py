@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field(
         default="postgresql+asyncpg://postgres:secret@localhost:5432/learnsystem"
     )
+    REDIS_URL: str = Field(default="redis://localhost:6379/0")
 
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).resolve().parent / ".env"),

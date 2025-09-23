@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
-from app.db.session import async_session
+from app.db.session import get_db
 from app.db.db import Question, User
 from app.router.user import get_current_active_user
 
@@ -41,11 +41,6 @@ class QuestionOut(BaseModel):
 
 	class Config:
 		from_attributes = True
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-	async with async_session() as session:  # type: ignore[func-returns-value]
-		yield session
-
 
 @router.delete("/{question_id}", description="删除题目（会连带移除与试卷的关联）")
 async def delete_question(
