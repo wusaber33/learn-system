@@ -16,11 +16,9 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
-from sqlalchemy.orm import relationship, foreign
+from sqlalchemy.orm import relationship
 from app.db.base import Base
 from typing import Optional
-
-# 本模块仅定义模型；共享的 Base/engine/session 在 app.db.base 与 app.db.session 中定义
 
 
 # ---- UUIDv7 生成器（优先使用 Python 3.12+ 或 uuid6 库，最后降级为 uuid4 时间有序替代） ----
@@ -319,3 +317,20 @@ class StudentAnswer(Base):
 
     def __repr__(self):
         return f"<{self.__class__.__name__} {self.examinee_id}>"
+    
+
+class UserGiftRecord(Base):
+    """新用户注册礼包领取记录表"""
+    __tablename__ = "user_gift_record"
+    
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()), comment="记录ID")
+    user_id = Column(String(36), nullable=False, index=True, comment="用户ID")
+    gift_id = Column(String(36), nullable=False, comment="礼包ID")
+    receive_time = Column(DateTime, default=datetime.utcnow, comment="领取时间")
+    is_valid = Column(Boolean, default=True, comment="是否有效")
+    request_id = Column(String(64), unique=True, comment="请求唯一标识（用于幂等性）")
+    
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uk_user_id"),
+        {"comment": "新用户注册礼包领取记录"}
+    )

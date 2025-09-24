@@ -1,12 +1,3 @@
-'''
-Author: wusaber33
-Date: 2025-09-22 18:19:31
-LastEditors: wusaber33
-LastEditTime: 2025-09-22 19:57:11
-FilePath: \learn-system\app\db\session.py
-Description: 
-Copyright (c) 2025 by wusaber33, All Rights Reserved. 
-'''
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine

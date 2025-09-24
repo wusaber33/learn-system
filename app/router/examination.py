@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Optional, AsyncGenerator, List, Literal
+from typing import Annotated, Optional, List, Literal
 from uuid import UUID
 import json
 from base64 import urlsafe_b64decode, urlsafe_b64encode
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.db.db import ExaminationInfo, User, PaperQuestion,Question,Examinee,UserInfo
+from sqlalchemy.dialects.postgresql import insert
 from app.router.user import get_current_active_user
 from app.router.question import QuestionOut
 
@@ -182,6 +183,21 @@ async def add_question_to_exam(
     unique_ids = list(dict.fromkeys(body.question_ids))
     if not unique_ids:
         return []
+    
+    # 确认题目存在且未删除且状态为启用
+    q_stmt = select(Question.id).where(Question.id.in_(unique_ids))
+    q_result = await db.execute(q_stmt)
+    existing_questions = {row[0] for row in q_result.all()}
+    missing = [qid for qid in unique_ids if qid not in existing_questions]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "msg": "Some questions not found",
+                "missing_ids": [str(qid) for qid in missing],
+            }
+        )
+
 
     # 过滤掉已存在关联，避免触发唯一索引
     existing_stmt = (
@@ -193,19 +209,10 @@ async def add_question_to_exam(
     to_insert = [qid for qid in unique_ids if qid not in existing]
 
     if to_insert:
-        stmt = (
-            pg_insert(PaperQuestion)
-            .values(
-                [
-                    {
-                        "examination_info_id": exam.id,
-                        "question_id": qid,
-                        "creator": current_user.id,
-                    }
-                    for qid in to_insert
-                ]
-            )
-        )
+        stmt = insert(PaperQuestion).values([
+          {'examination_info_id': exam_id, 'question_id': q_id, 'creator': current_user.id}
+          for q_id in to_insert
+        ])
         await db.execute(stmt)
         await db.commit()
     return to_insert
@@ -382,3 +389,51 @@ async def get_exam_details(
         exam_details.append(ExamDetail(**base.model_dump(), examinees=examinees))
 
     return exam_details
+
+
+@router.post("/join/{exam_id}",description="学生加入考试",response_model=List[UUID])
+async def student_join_exam(
+    exam_id: UUID,
+    body: List[UUID],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_active_user)],
+):
+    if not body:
+        return []
+
+    inserted_exams = []
+    if body:
+        stmt = (
+            pg_insert(Examinee)
+            .values(
+                [
+                    {
+                        "exam_id": exam_id,
+                        "student_id": student_id,
+                        "status": 1,
+                        "submit_time": None,
+                    }
+                    for student_id in body
+                ]
+            )
+            .returning(Examinee.exam_id, Examinee.student_id, Examinee.status, Examinee.submit_time)
+        )
+        result = await db.execute(stmt)
+        await db.commit()
+        inserted_exams = [
+            Examinee(
+                exam_id=row[0],
+                student_id=row[1],
+                status=row[2],
+                submit_time=row[3]
+            )
+            for row in result.fetchall()
+        ]
+    return [exam.student_id for exam in inserted_exams]
+
+
+
+
+
+    
+  

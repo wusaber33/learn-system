@@ -38,7 +38,6 @@ services:
       redis:
         condition: service_healthy
     environment:
-      # align with app/config.py
       DATABASE_URL: postgresql+asyncpg://postgres:secret@db:5432/learnsystem
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET_KEY: dev-secret

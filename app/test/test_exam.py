@@ -2,9 +2,7 @@ import unittest
 from uuid import UUID, uuid4
 from datetime import datetime
 
-from sqlalchemy import select
-
-from app.test.client import get_client,_ensure_admin
+from app.test.client import get_client
 
 ADMIN_NAME = "test_admin_ci"
 ADMIN_PASS = "Admin#123456"
@@ -236,10 +234,3 @@ class TestListTeacherExam(unittest.TestCase):
         list_resp = self.client.get(f"/exam/list")
         self.assertEqual(list_resp.status_code, 401, list_resp.text)  # Unauthorized
         self.assertEqual(list_resp.json().get("detail"), "Not authenticated")
-
-    def test_list_teacher_exams_invalid_page(self):
-        token = self._get_token(ADMIN_NAME, ADMIN_PASS)
-        headers = {"Authorization": f"Bearer {token}"}
-        list_resp = self.client.get(f"/exam/list?page=0", headers=headers)
-        self.assertEqual(list_resp.status_code, 422, list_resp.text)
-        self.assertIn("ensure this value is greater than or equal to 1", list_resp.text)

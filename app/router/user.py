@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Optional, AsyncGenerator, Literal, Dict, Any
+from typing import Annotated, Optional, Literal, Dict, Any
 from uuid import UUID
 import json
 
@@ -10,6 +10,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy import select,func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from redis.asyncio import Redis
 
 from app.db.session import get_db
@@ -144,14 +145,19 @@ async def get_user_by_id(db: AsyncSession, user_id: UUID) -> Optional[User]:
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
-async def get_userinfo_by_id(db: AsyncSession,user_id:UUID) -> Optional[UserInfo]:
+async def get_users_with_profile(db: AsyncSession, user_id: UUID) -> Optional[User]:
+    """单用户 + 预加载 profile (名称沿用, 但只支持单个用户以满足你的需求)"""
     stmt = (
-        select(UserInfo)
-        .where(UserInfo.user_id == user_id)
+        select(User)
+        .options(selectinload(User.profile))
+        .where(User.id == user_id)
+        .where(User.status == 1)
+        .where(User.deleted_at.is_(None))
         .limit(1)
     )
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
+
 
 async def authenticate_user(db: AsyncSession, username: str, password: str) -> Optional[User]:
     user = await get_user_by_name(db, username)
@@ -189,18 +195,19 @@ def cache_key_user_hash(user_id: UUID) -> str:
 def cache_key_user_null(user_id: UUID) -> str:
     return f"user:{user_id}:info:null:v1"
 
-def _serialize_user_payload(user: User, info: UserInfo) -> Dict[str, Any]:
+def _serialize_user_payload(user: User) -> Dict[str, Any]:
+    profile = user.profile
     return {
         "id": str(user.id),
         "name": user.name,
         "role": int(user.role),
         "status": int(user.status),
         "info": {
-            "phone": info.phone,
-            "email": info.email,
-            "address": info.address,
-            "avatar": info.avatar,
-            "birthday": info.birthday.isoformat() if info.birthday else None,
+            "phone": getattr(profile, 'phone', ''),
+            "email": getattr(profile, 'email', ''),
+            "address": getattr(profile, 'address', ''),
+            "avatar": getattr(profile, 'avatar', ''),
+            "birthday": profile.birthday.isoformat() if (profile and profile.birthday) else None,
         },
     }
 
@@ -360,7 +367,6 @@ async def create_user(
     db_user = await get_user_by_name(db, payload.name)
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
-    # 事务性创建（避免嵌套 begin：SQLAlchemy 2.0 默认会自动开启事务）
     try:
         hashed = get_password_hash(payload.password)
         new_user = User(
@@ -370,13 +376,8 @@ async def create_user(
             status=payload.status,
             creator=current_user.id,
         )
-        db.add(new_user)
-        # 确保拿到 user.id
-        await db.flush()
-
         info = payload.info
-        new_info = UserInfo(
-            user_id=new_user.id,
+        new_user.profile = UserInfo(
             phone=info.phone,
             email=info.email,
             address=info.address or "",
@@ -384,23 +385,22 @@ async def create_user(
             birthday=info.birthday,
             status=1,
         )
-        db.add(new_info)
-
+        db.add(new_user)
+        await db.flush()
         await db.commit()
     except Exception:
         await db.rollback()
         raise
 
-    # 刷新对象
-    await db.refresh(new_user)
-    await db.refresh(new_info)
+    profile = new_user.profile
 
     # 维护ID集合，清空空值键
     try:
         await redis.sadd(KEY_USERS_SET, new_user.id)
         await redis.delete(cache_key_user_null(new_user.id))
-    except Exception as e:
+    except Exception:
         pass
+
 
 
     return UserWithInfoOut(
@@ -409,16 +409,16 @@ async def create_user(
         role=int(new_user.role),
         status=int(new_user.status),
         info=UserInfoOut(
-            phone=new_info.phone,
-            email=new_info.email,
-            address=new_info.address,
-            avatar=new_info.avatar,
-            birthday=new_info.birthday,
+            phone=profile.phone if profile else "",
+            email=profile.email if profile else "",
+            address=profile.address if profile else "",
+            avatar=profile.avatar if profile else "",
+            birthday=profile.birthday if profile else None,
         ),
     )
 
 @router.post("/admin", response_model=UserWithInfoOut)
-async def create_user(
+async def create_user_admin(
     payload: UserCreateWithInfo,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis,Depends(get_redis)]
@@ -427,7 +427,6 @@ async def create_user(
     db_user = await get_user_by_name(db, payload.name)
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
-    # 事务性创建（避免嵌套 begin：SQLAlchemy 2.0 默认会自动开启事务）
     try:
         hashed = get_password_hash(payload.password)
         new_user = User(
@@ -436,13 +435,8 @@ async def create_user(
             role=payload.role,
             status=payload.status,
         )
-        db.add(new_user)
-        # 确保拿到 user.id
-        await db.flush()
-
         info = payload.info
-        new_info = UserInfo(
-            user_id=new_user.id,
+        new_user.profile = UserInfo(
             phone=info.phone,
             email=info.email,
             address=info.address or "",
@@ -450,16 +444,14 @@ async def create_user(
             birthday=info.birthday,
             status=1,
         )
-        db.add(new_info)
-
+        db.add(new_user)
+        await db.flush()
         await db.commit()
     except Exception:
         await db.rollback()
         raise
 
-    # 刷新对象
-    await db.refresh(new_user)
-    await db.refresh(new_info)
+    profile = new_user.profile
 
     # 维护ID集合，清空空值键
     try:
@@ -475,11 +467,11 @@ async def create_user(
         role=int(new_user.role),
         status=int(new_user.status),
         info=UserInfoOut(
-            phone=new_info.phone,
-            email=new_info.email,
-            address=new_info.address,
-            avatar=new_info.avatar,
-            birthday=new_info.birthday,
+            phone=profile.phone if profile else "",
+            email=profile.email if profile else "",
+            address=profile.address if profile else "",
+            avatar=profile.avatar if profile else "",
+            birthday=profile.birthday if profile else None,
         ),
     )
 
@@ -532,38 +524,39 @@ async def get_user(
             ),
         )
 
-    user = await get_user_by_id(db, user_id)
-    userinfo = await get_userinfo_by_id(db, user_id)
-    if not user or not userinfo:
-        # 未找到，写入空值缓存（短TTL）并返回404
-        await cache_mark_user_null(redis,user_id)
+    user = await get_users_with_profile(db, user_id)
+    if not user:
+        # 数据库确实不存在 -> 标记空值缓存
+        try:
+            await cache_mark_user_null(redis, user_id)
+        except Exception:
+            pass
         raise HTTPException(status_code=404, detail="User not found")
-    resp = UserWithInfoOut(
-        id=str(user.id),
-        name=user.name,
-        role=int(user.role),
-        status=int(user.status),
-        info=UserInfoOut(
-            phone=userinfo.phone,
-            email=userinfo.email,
-            address=userinfo.address,
-            avatar=userinfo.avatar,
-            birthday=userinfo.birthday,
-        ),
-    )
+
     # 回填缓存
-    payload_dict = _serialize_user_payload(user, userinfo)
+    payload_dict = _serialize_user_payload(user)
     if cache_mode == "hash":
         await cache_set_user_hash(redis, user.id, payload_dict)
     else:
         await cache_set_user_string(redis, user.id, payload_dict)
-
     try:
         await redis.sadd(KEY_USERS_SET, user.id)
     except Exception:
         pass
 
-    return resp
+    return UserWithInfoOut(
+        id=str(user.id),
+        name=user.name,
+        role=int(user.role),
+        status=int(user.status),
+        info=UserInfoOut(
+            phone=user.profile.phone,
+            email=user.profile.email,
+            address=user.profile.address,
+            avatar=user.profile.avatar,
+            birthday=user.profile.birthday,
+        ),
+    )
 
 @router.put("", response_model=UserWithInfoOut)
 async def update_user(
@@ -577,11 +570,10 @@ async def update_user(
     if int(current_user.role) != 0 and current_user.id != user_id:
         raise HTTPException(status_code=403, detail="Not allowed to update this user")
 
-    user = await get_user_by_id(db, user_id)
+    user = await get_users_with_profile(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    userinfo = await get_userinfo_by_id(db, user_id)
-    if not userinfo:
+    if not user.profile:
         raise HTTPException(status_code=404, detail="User profile not found")
 
     try:
@@ -609,15 +601,15 @@ async def update_user(
 
         # 更新 UserInfo（字段为 None 则不变）
         if payload.info.phone is not None:
-            userinfo.phone = payload.info.phone
+            user.profile.phone = payload.info.phone
         if payload.info.email is not None:
-            userinfo.email = payload.info.email
+            user.profile.email = payload.info.email
         if payload.info.address is not None:
-            userinfo.address = payload.info.address
+            user.profile.address = payload.info.address
         if payload.info.avatar is not None:
-            userinfo.avatar = payload.info.avatar
+            user.profile.avatar = payload.info.avatar
         if payload.info.birthday is not None:
-            userinfo.birthday = payload.info.birthday
+            user.profile.birthday = payload.info.birthday
 
         await db.commit()
     except HTTPException:
@@ -628,11 +620,11 @@ async def update_user(
         raise
 
     await db.refresh(user)
-    await db.refresh(userinfo)
+    await db.refresh(user.profile)
 
     # 同步缓存：先失效后重建两种结构
     await cache_invalidate_user(redis, user.id)
-    payload_dict = _serialize_user_payload(user, userinfo)
+    payload_dict = _serialize_user_payload(user)
     await cache_set_user_string(redis, user.id, payload_dict)
     await cache_set_user_hash(redis, user.id, payload_dict)
 
@@ -642,11 +634,11 @@ async def update_user(
         role=int(user.role),
         status=int(user.status),
         info=UserInfoOut(
-            phone=userinfo.phone,
-            email=userinfo.email,
-            address=userinfo.address,
-            avatar=userinfo.avatar,
-            birthday=userinfo.birthday,
+            phone=user.profile.phone,
+            email=user.profile.email,
+            address=user.profile.address,
+            avatar=user.profile.avatar,
+            birthday=user.profile.birthday,
         ),
     )
 
@@ -678,8 +670,7 @@ async def delete_user(
 
     try:
         # 软删除
-        user.deleted_at = datetime.now()
-        user.deleted_by = current_user.id
+        user.soft_delete(current_user.id)
         await db.commit()
     except Exception:
         await db.rollback()
@@ -701,12 +692,9 @@ async def get_info_and_totalpaper(
     current_user: Annotated[User, Depends(get_current_active_user)],
     userid: UUID = None,
 ):
-    user = await get_user_by_id(db, userid)
+    user = await get_users_with_profile(db, userid)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    userinfo = await get_userinfo_by_id(db, userid)
-    if not userinfo:
-        raise HTTPException(status_code=404, detail="User profile not found")
 
     total_paper = await count_user_papers(db, userid)
 
@@ -716,11 +704,11 @@ async def get_info_and_totalpaper(
         role=int(user.role),
         status=int(user.status),
         info=UserInfoOut(
-            phone=userinfo.phone,
-            email=userinfo.email,
-            address=userinfo.address,
-            avatar=userinfo.avatar,
-            birthday=userinfo.birthday,
+            phone=user.profile.phone,
+            email=user.profile.email,
+            address=user.profile.address,
+            avatar=user.profile.avatar,
+            birthday=user.profile.birthday,
         ),
         total_paper=total_paper
     )

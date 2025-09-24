@@ -1,15 +1,9 @@
 import unittest
-from uuid import UUID, uuid4
+from uuid import uuid4
 from datetime import datetime
 
-from fastapi.testclient import TestClient
-from sqlalchemy import select
 
-from app.main import app
-from app.db.db import User, UserInfo,Question
-from app.router.user import get_password_hash
-
-from app.test.client import get_client,_ensure_admin
+from app.test.client import get_client
 
 ADMIN_NAME = "test_admin_ci"
 ADMIN_PASS = "Admin#123456"
