@@ -7,11 +7,12 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel,field_validator,field_serializer
 from sqlalchemy import select,func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from redis.asyncio import Redis
+import re
 
 from app.db.session import get_db
 from app.db.db import User, UserInfo,ExaminationInfo
@@ -51,6 +52,27 @@ class UserCreate(BaseModel):
     role: int = 1  # 0-管理员,1-教师,2-学生（与模型一致）
     status: int = 1  # 0-禁用,1-正常
 
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 6:
+            raise ValueError("Password must be at least 6 characters")
+        return v
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: int) -> int:
+        if v not in (0, 1, 2):
+            raise ValueError("Role must be 0 (admin), 1 (teacher), or 2 (student)")
+        return v
+    
+    @field_validator('status')
+    @classmethod
+    def validate_status(cls, v: int) -> int:
+        if v not in (0, 1):
+            raise ValueError("Status must be 0 (inactive) or 1 (active)")
+        return v
+
 
 class UserInfoCreate(BaseModel):
     phone: str
@@ -58,6 +80,32 @@ class UserInfoCreate(BaseModel):
     address: Optional[str] = ""
     avatar: Optional[str] = ""
     birthday: Optional[datetime] = None
+
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        email_regex = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+        if not re.match(email_regex, v):
+            raise ValueError("Invalid email format")
+        return v
+
+    @field_validator('phone')
+    @classmethod
+    def validate_phone(cls, v: str) -> str:
+        phone_regex = r'^1[3-9]\d{9}$'
+        if not re.match(phone_regex, v):
+            raise ValueError("Invalid phone number format")
+        return v
+
+    @field_validator('birthday')
+    @classmethod
+    def validate_birthday(cls, v: Optional[datetime]) -> Optional[datetime]:
+        # 去除时区
+        if v:
+            v = v.replace(tzinfo=None)
+        if v and v > datetime.now():
+            raise ValueError("Birthday cannot be in the future")
+        return v
 
 
 class UserInfoOut(BaseModel):
@@ -67,19 +115,34 @@ class UserInfoOut(BaseModel):
     avatar: str
     birthday: Optional[datetime] = None
 
+    @field_serializer('birthday')
+    def serialize_birthday(self, v: Optional[datetime]) -> Optional[str]:
+        if v:
+            return v.isoformat()
+        return None
+    
+    @field_validator('birthday', mode='before')
+    @classmethod
+    def parse_birthday(cls, v):
+        if isinstance(v, str):
+            return datetime.fromisoformat(v)
+        return v
+
+
+
     class Config:
         from_attributes = True
 
 
 class UserCreateWithInfo(UserCreate):
-    info: UserInfoCreate
+    profile: UserInfoCreate
 
 
 class UserWithInfoOut(UserOut):
-    info: UserInfoOut
+    profile: UserInfoOut
 
 class UserWithInfoAndTotalPaper(UserOut):
-    info: UserInfoOut
+    profile: UserInfoOut
     total_paper: int = 0
 
 # 更新用的可选字段模型
@@ -98,9 +161,8 @@ class UserInfoUpdate(BaseModel):
     birthday: Optional[datetime] = None
 
 
-class UserUpdateWithInfo(BaseModel):
-    user: UserUpdate = UserUpdate()
-    info: UserInfoUpdate = UserInfoUpdate()
+class UserUpdateWithInfo(UserUpdate):
+    profile: UserInfoUpdate = UserInfoUpdate()
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -185,24 +247,25 @@ NULL_TTL_SECONDS =  60 # 1分钟
 KEY_USERS_SET = "users:ids:v1"
 
 def cache_key_user_string(user_id: UUID) -> str:
-    return f"user:{user_id}:info:v1"
+    return f"user:{user_id}:profile:v1"
 
 
 def cache_key_user_hash(user_id: UUID) -> str:
-    return f"user:{user_id}:info:hash:v1"
+    return f"user:{user_id}:profile:hash:v1"
 
 # 空值缓存 key
 def cache_key_user_null(user_id: UUID) -> str:
-    return f"user:{user_id}:info:null:v1"
+    return f"user:{user_id}:profile:null:v1"
 
 def _serialize_user_payload(user: User) -> Dict[str, Any]:
     profile = user.profile
+
     return {
         "id": str(user.id),
         "name": user.name,
         "role": int(user.role),
         "status": int(user.status),
-        "info": {
+        "profile": {
             "phone": getattr(profile, 'phone', ''),
             "email": getattr(profile, 'email', ''),
             "address": getattr(profile, 'address', ''),
@@ -233,11 +296,11 @@ async def cache_set_user_hash(redis: Redis, user_id: UUID, payload: Dict[str, An
         "name": payload["name"],
         "role": str(payload["role"]),
         "status": str(payload["status"]),
-        "info_phone": payload["info"].get("phone") or "",
-        "info_email": payload["info"].get("email") or "",
-        "info_address": payload["info"].get("address") or "",
-        "info_avatar": payload["info"].get("avatar") or "",
-        "info_birthday": payload["info"].get("birthday") or "",
+        "profile_phone": payload["profile"].get("phone") or "",
+        "profile_email": payload["profile"].get("email") or "",
+        "profile_address": payload["profile"].get("address") or "",
+        "profile_avatar": payload["profile"].get("avatar") or "",
+        "profile_birthday": payload["profile"].get("birthday") or "",
     }
     if mapping:
         await redis.hset(key, mapping=mapping)
@@ -250,9 +313,9 @@ async def cache_get_user_hash(redis: Redis, user_id: UUID) -> Optional[Dict[str,
     if not mapping:
         return None
     # 恢复类型
-    info_birthday = mapping.get("info_birthday") or None
+    profile_birthday = mapping.get("profile_birthday") or None
     try:
-        birthday_parsed = datetime.fromisoformat(info_birthday) if info_birthday else None
+        birthday_parsed = datetime.fromisoformat(profile_birthday) if profile_birthday else None
     except Exception:
         birthday_parsed = None
     try:
@@ -268,11 +331,11 @@ async def cache_get_user_hash(redis: Redis, user_id: UUID) -> Optional[Dict[str,
         "name": mapping.get("name", ""),
         "role": role_val,
         "status": status_val,
-        "info": {
-            "phone": mapping.get("info_phone", ""),
-            "email": mapping.get("info_email", ""),
-            "address": mapping.get("info_address", ""),
-            "avatar": mapping.get("info_avatar", ""),
+        "profile": {
+            "phone": mapping.get("profile_phone", ""),
+            "email": mapping.get("profile_email", ""),
+            "address": mapping.get("profile_address", ""),
+            "avatar": mapping.get("profile_avatar", ""),
             "birthday": birthday_parsed.isoformat() if birthday_parsed else None,
         },
     }
@@ -376,13 +439,13 @@ async def create_user(
             status=payload.status,
             creator=current_user.id,
         )
-        info = payload.info
+        profile = payload.profile
         new_user.profile = UserInfo(
-            phone=info.phone,
-            email=info.email,
-            address=info.address or "",
-            avatar=info.avatar or "",
-            birthday=info.birthday,
+            phone=profile.phone,
+            email=profile.email,
+            address=profile.address or "",
+            avatar=profile.avatar or "",
+            birthday=profile.birthday,
             status=1,
         )
         db.add(new_user)
@@ -392,7 +455,7 @@ async def create_user(
         await db.rollback()
         raise
 
-    profile = new_user.profile
+    
 
     # 维护ID集合，清空空值键
     try:
@@ -401,21 +464,9 @@ async def create_user(
     except Exception:
         pass
 
+    response = UserWithInfoOut.model_validate(new_user)
+    return response
 
-
-    return UserWithInfoOut(
-        id=str(new_user.id),
-        name=new_user.name,
-        role=int(new_user.role),
-        status=int(new_user.status),
-        info=UserInfoOut(
-            phone=profile.phone if profile else "",
-            email=profile.email if profile else "",
-            address=profile.address if profile else "",
-            avatar=profile.avatar if profile else "",
-            birthday=profile.birthday if profile else None,
-        ),
-    )
 
 @router.post("/admin", response_model=UserWithInfoOut)
 async def create_user_admin(
@@ -435,13 +486,13 @@ async def create_user_admin(
             role=payload.role,
             status=payload.status,
         )
-        info = payload.info
+        profile = payload.profile
         new_user.profile = UserInfo(
-            phone=info.phone,
-            email=info.email,
-            address=info.address or "",
-            avatar=info.avatar or "",
-            birthday=info.birthday,
+            phone=profile.phone,
+            email=profile.email,
+            address=profile.address or "",
+            avatar=profile.avatar or "",
+            birthday=profile.birthday,
             status=1,
         )
         db.add(new_user)
@@ -451,7 +502,6 @@ async def create_user_admin(
         await db.rollback()
         raise
 
-    profile = new_user.profile
 
     # 维护ID集合，清空空值键
     try:
@@ -460,20 +510,9 @@ async def create_user_admin(
     except Exception as e:
         pass
 
+    response = UserWithInfoOut.model_validate(new_user)
 
-    return UserWithInfoOut(
-        id=str(new_user.id),
-        name=new_user.name,
-        role=int(new_user.role),
-        status=int(new_user.status),
-        info=UserInfoOut(
-            phone=profile.phone if profile else "",
-            email=profile.email if profile else "",
-            address=profile.address if profile else "",
-            avatar=profile.avatar if profile else "",
-            birthday=profile.birthday if profile else None,
-        ),
-    )
+    return response
 
 
 
@@ -487,7 +526,7 @@ async def get_user(
 ):
     # 仅管理员/教师可以查看用户信息（按需调整）
     if int(current_user.role) not in (0, 1):
-        raise HTTPException(status_code=403, detail="Only teacher/admin can view user info")
+        raise HTTPException(status_code=403, detail="Only teacher/admin can view user profile")
     
     # 空值缓存短路
     if await cache_is_user_null(redis,user_id):
@@ -509,20 +548,8 @@ async def get_user(
         cached = await cache_get_user_string(redis, user_id)
 
     if cached:
-        info = cached["info"]
-        return UserWithInfoOut(
-            id=cached["id"],
-            name=cached["name"],
-            role=cached["role"],
-            status=cached["status"],
-            info=UserInfoOut(
-                phone=info.get("phone", ""),
-                email=info.get("email", ""),
-                address=info.get("address", ""),
-                avatar=info.get("avatar", ""),
-                birthday=datetime.fromisoformat(info["birthday"]) if info.get("birthday") else None,
-            ),
-        )
+        return UserWithInfoOut.model_validate(cached)
+        
 
     user = await get_users_with_profile(db, user_id)
     if not user:
@@ -544,19 +571,7 @@ async def get_user(
     except Exception:
         pass
 
-    return UserWithInfoOut(
-        id=str(user.id),
-        name=user.name,
-        role=int(user.role),
-        status=int(user.status),
-        info=UserInfoOut(
-            phone=user.profile.phone,
-            email=user.profile.email,
-            address=user.profile.address,
-            avatar=user.profile.avatar,
-            birthday=user.profile.birthday,
-        ),
-    )
+    return UserWithInfoOut.model_validate(user)
 
 @router.put("", response_model=UserWithInfoOut)
 async def update_user(
@@ -578,10 +593,10 @@ async def update_user(
 
     try:
         # 用户名唯一性校验（若修改了 name）
-        if payload.user.name and payload.user.name != user.name:
+        if payload.name and payload.name != user.name:
             stmt = (
                 select(User)
-                .where(User.name == payload.user.name)
+                .where(User.name == payload.name)
                 .where(User.deleted_at.is_(None))
                 .limit(1)
             )
@@ -589,27 +604,33 @@ async def update_user(
             if existing and existing.id != user.id:
                 raise HTTPException(status_code=400, detail="Username already registered")
 
-        # 更新 User
-        if payload.user.name is not None:
-            user.name = payload.user.name
-        if payload.user.password:
-            user.password = get_password_hash(payload.user.password)
-        if payload.user.role is not None:
-            user.role = int(payload.user.role)
-        if payload.user.status is not None:
-            user.status = int(payload.user.status)
+        # 更新 User（只改非 None 字段）
+        if payload.name is not None:
+            user.name = payload.name
+        if payload.password:
+            user.password = get_password_hash(payload.password)
+        if payload.role is not None:
+            user.role = int(payload.role)
+        if payload.status is not None:
+            user.status = int(payload.status)
 
         # 更新 UserInfo（字段为 None 则不变）
-        if payload.info.phone is not None:
-            user.profile.phone = payload.info.phone
-        if payload.info.email is not None:
-            user.profile.email = payload.info.email
-        if payload.info.address is not None:
-            user.profile.address = payload.info.address
-        if payload.info.avatar is not None:
-            user.profile.avatar = payload.info.avatar
-        if payload.info.birthday is not None:
-            user.profile.birthday = payload.info.birthday
+        if payload.profile.phone is not None:
+            user.profile.phone = payload.profile.phone
+        if payload.profile.email is not None:
+            user.profile.email = payload.profile.email
+        if payload.profile.address is not None:
+            user.profile.address = payload.profile.address
+        if payload.profile.avatar is not None:
+            user.profile.avatar = payload.profile.avatar
+        if payload.profile.birthday is not None:
+            user.profile.birthday = payload.profile.birthday
+
+        # flush 使改动落库但不触发 expire_on_commit 前的失效
+        await db.flush()
+
+        payload_dict = _serialize_user_payload(user)
+        response_obj = UserWithInfoOut.model_validate(user)
 
         await db.commit()
     except HTTPException:
@@ -619,28 +640,11 @@ async def update_user(
         await db.rollback()
         raise
 
-    await db.refresh(user)
-    await db.refresh(user.profile)
-
-    # 同步缓存：先失效后重建两种结构
     await cache_invalidate_user(redis, user.id)
-    payload_dict = _serialize_user_payload(user)
     await cache_set_user_string(redis, user.id, payload_dict)
     await cache_set_user_hash(redis, user.id, payload_dict)
 
-    return UserWithInfoOut(
-        id=str(user.id),
-        name=user.name,
-        role=int(user.role),
-        status=int(user.status),
-        info=UserInfoOut(
-            phone=user.profile.phone,
-            email=user.profile.email,
-            address=user.profile.address,
-            avatar=user.profile.avatar,
-            birthday=user.profile.birthday,
-        ),
-    )
+    return response_obj
 
 @router.delete("/cache/{user_id}")
 async def invalidate_user_cache(
@@ -686,29 +690,24 @@ async def delete_user(
         pass    
     return {"ok": True}
 
-@router.get("/info_and_totalpaper",response_model=UserWithInfoAndTotalPaper)
-async def get_info_and_totalpaper(
+@router.get("/profile_and_totalpaper",response_model=UserWithInfoAndTotalPaper)
+async def get_profile_and_totalpaper(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    userid: UUID = None,
+    userid: UUID,
 ):
     user = await get_users_with_profile(db, userid)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # 检查用户是否有profile信息
+    if not user.profile:
+        raise HTTPException(status_code=404, detail="User profile not found")
+
     total_paper = await count_user_papers(db, userid)
 
-    return UserWithInfoAndTotalPaper(
-        id=str(user.id),
-        name=user.name,
-        role=int(user.role),
-        status=int(user.status),
-        info=UserInfoOut(
-            phone=user.profile.phone,
-            email=user.profile.email,
-            address=user.profile.address,
-            avatar=user.profile.avatar,
-            birthday=user.profile.birthday,
-        ),
-        total_paper=total_paper
-    )
+    user_data = UserWithInfoOut.model_validate(user).model_dump()
+    user_data['total_paper'] = total_paper
+    response = UserWithInfoAndTotalPaper(**user_data)
+
+    return response 

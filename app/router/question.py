@@ -25,6 +25,8 @@ class QuestionCreate(BaseModel):
 	level: int = Field(1, ge=1, le=3, description="1-简单，2-中等，3-困难")
 
 
+
+
 class QuestionOut(BaseModel):
 	id: UUID
 	content: str

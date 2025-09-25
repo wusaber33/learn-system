@@ -5,11 +5,11 @@ import json
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field,field_validator,field_serializer,model_validator
 from sqlalchemy import and_, or_, select, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlalchemy.orm import selectinload
 from app.db.session import get_db
 from app.db.db import ExaminationInfo, User, PaperQuestion,Question,Examinee,UserInfo
 from sqlalchemy.dialects.postgresql import insert
@@ -30,6 +30,71 @@ class ExamCreate(BaseModel):
     start_time: datetime
     end_time: datetime
 
+    @model_validator(mode='after')
+    def check_times(self):
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
+
+    @field_validator("start_time")
+    def check_start_time(cls, v):
+        # 去除时区信息
+        if v.tzinfo:
+            v = v.astimezone(tz=None).replace(tzinfo=None)
+        if v <= datetime.now():
+            raise ValueError("start_time must be in the future")
+        return v
+
+    @field_validator("end_time")
+    def check_end_time(cls, v):
+        # 去除时区信息
+        if v.tzinfo:
+            v = v.astimezone(tz=None).replace(tzinfo=None)
+        return v
+
+    @field_validator("duration")
+    def check_duration(cls, v):
+        if v <= 0:
+            raise ValueError("duration must be positive")
+        return v
+    
+    @model_validator(mode='after')
+    def check_scores(self):
+        if self.pass_score > self.total_score:
+            raise ValueError("pass_score cannot be greater than total_score")
+        return self
+    
+    @field_validator("total_score")
+    def check_total_score(cls, v):
+        if v <= 0:
+            raise ValueError("total_score must be positive")
+        return v
+    
+    @field_validator("type")
+    def check_type(cls, v):
+        if v not in (1, 2, 3, 4, 5):
+            raise ValueError("type must be one of 1, 2, 3, 4, 5")
+        return v
+    
+    @field_validator("difficulty_level")
+    def check_difficulty_level(cls, v):
+        if v not in (1, 2, 3):
+            raise ValueError("difficulty_level must be one of 1, 2, 3")
+        return v
+    
+    @field_validator("grade_level")
+    def check_grade_level(cls, v):
+        if v not in (1, 2, 3, 4):
+            raise ValueError("grade_level must be one of 1, 2, 3, 4")
+        return v
+
+    @field_serializer("start_time", "end_time")
+    def serialize_datetime(self, v: datetime) -> str:
+        if v and v.tzinfo:
+
+            v = v.astimezone(tz=None).replace(tzinfo=None)
+        return v.isoformat()
+
 
 class ExamUpdate(BaseModel):
     name: Optional[str] = None
@@ -42,6 +107,71 @@ class ExamUpdate(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     status: Optional[int] = None
+
+    @model_validator(mode='after')
+    def check_times(self):
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
+
+    @field_validator("start_time")
+    def check_start_time(cls, v):
+        # 去除时区信息
+        if v.tzinfo:
+            v = v.astimezone(tz=None).replace(tzinfo=None)
+        if v <= datetime.now():
+            raise ValueError("start_time must be in the future")
+        return v
+
+    @field_validator("end_time")
+    def check_end_time(cls, v):
+        # 去除时区信息
+        if v.tzinfo:
+            v = v.astimezone(tz=None).replace(tzinfo=None)
+        return v
+
+    @field_validator("duration")
+    def check_duration(cls, v):
+        if v <= 0:
+            raise ValueError("duration must be positive")
+        return v
+
+    @model_validator(mode='after')
+    def check_scores(self):
+        if self.pass_score > self.total_score:
+            raise ValueError("pass_score cannot be greater than total_score")
+        return self
+    
+    @field_validator("total_score")
+    def check_total_score(cls, v):
+        if v <= 0:
+            raise ValueError("total_score must be positive")
+        return v
+    
+    @field_validator("type")
+    def check_type(cls, v):
+        if v not in (1, 2, 3, 4, 5):
+            raise ValueError("type must be one of 1, 2, 3, 4, 5")
+        return v
+    
+    @field_validator("difficulty_level")
+    def check_difficulty_level(cls, v):
+        if v not in (1, 2, 3):
+            raise ValueError("difficulty_level must be one of 1, 2, 3")
+        return v
+    
+    @field_validator("grade_level")
+    def check_grade_level(cls, v):
+        if v not in (1, 2, 3, 4):
+            raise ValueError("grade_level must be one of 1, 2, 3, 4")
+        return v
+
+    @field_validator("status")
+    def check_status(cls, v):
+        if v not in (1, 2):
+            raise ValueError("status must be one of 1, 2")
+        return 
+
 
 
 class ExamOut(BaseModel):
@@ -61,16 +191,26 @@ class ExamOut(BaseModel):
     class Config:
         from_attributes = True
 
-class ExamPaper(ExamOut):
-    question_ids: List[QuestionOut] = Field(default_factory=list)
+class PaperQuestionOut(QuestionOut):
+    paper_question_id: UUID
 
-class StudentInfo(BaseModel):   
+class ExamPaper(ExamOut):
+    questions: List[PaperQuestionOut] = Field(default_factory=list)
+
+class StudentInfo(BaseModel):
     id: UUID
     name: str
     email: str
     phone: str
     status: Optional[int] = None
     submit_time: Optional[datetime] = None
+
+    @field_validator("submit_time")
+    def check_submit_time(cls, v):
+        # 去除时区信息
+        if v and v.tzinfo:
+            v = v.astimezone(tz=None).replace(tzinfo=None)
+        return v
 
 
 class ExamDetail(ExamOut):
@@ -139,7 +279,8 @@ async def create_exam_info(
     db.add(exam)
     await db.commit()
     await db.refresh(exam)
-    return exam
+    response = ExamOut.model_validate(exam)  # 确保能正确序列化
+    return response
 
 
 @router.put("/{exam_id}", description="更新试卷信息", response_model=ExamOut)
@@ -162,7 +303,8 @@ async def update_exam_info(
         setattr(exam, field, value)
     await db.commit()
     await db.refresh(exam)
-    return exam
+    response = ExamOut.model_validate(exam)  # 确保能正确序列化
+    return response
 
 @router.put("/{exam_id}/add_question", description="为试卷添加题目", response_model=list[UUID])
 async def add_question_to_exam(
@@ -223,23 +365,20 @@ async def get_paper_content(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_active_user)],
 ):
-    stmt = select(ExaminationInfo).where(ExaminationInfo.id == exam_id)
-    result = await db.execute(stmt)
-    exam = result.scalar_one_or_none()
+    stmt = select(ExaminationInfo).where(ExaminationInfo.id == exam_id).options(
+    selectinload(ExaminationInfo.paper_questions).selectinload(PaperQuestion.question)
+    )
+    exam = await db.scalar(stmt)
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
     # 一次联表查询题目，按关联表顺序返回
-    q_stmt = (
-        select(Question)
-        .join(PaperQuestion, PaperQuestion.question_id == Question.id)
-        .where(PaperQuestion.examination_info_id == exam.id)
-        .order_by(PaperQuestion.id.asc())
-    )
-    q_result = await db.execute(q_stmt)
-    questions = q_result.scalars().all()
+    questions = [PaperQuestionOut.model_validate({
+        **pq.question.__dict__,
+        "paper_question_id": pq.id
+    }) for pq in exam.paper_questions]
 
     exam_data = ExamPaper.model_validate(exam)
-    exam_data.question_ids = questions
+    exam_data.questions = questions
     return exam_data
 
 @router.get(
