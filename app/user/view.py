@@ -39,7 +39,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 async def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    redis: Annotated[Redis, Depends(get_redis)],
 ) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -73,7 +72,6 @@ async def get_current_active_user(
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Annotated[AsyncSession, Depends(get_db)],
-    redis: Annotated[Redis, Depends(get_redis)],
 ) -> Token:
     user = await UserService.authenticate_user(db, form_data.username, form_data.password)
     if not user:
@@ -183,7 +181,6 @@ async def invalidate_user_cache(
     user_id: UUID,
     redis: Annotated[Redis, Depends(get_redis)],
     current_user: Annotated[User, Depends(get_current_active_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     # 仅管理员可清除缓存（按需调整）
     if int(current_user.role) != 0:
@@ -211,7 +208,6 @@ async def get_profile_and_totalpaper(
     userid: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    redis: Annotated[Redis, Depends(get_redis)],
 ):
     user,total_paper = await UserService.get_user_with_totalpaper(db, user_id=userid)
     if not user:
