@@ -3,8 +3,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.main import app
-from app.db.db import User, UserInfo
-from app.router.user import get_password_hash
+from app.cmn.db import User, UserInfo
+from app.user.view import get_password_hash
 
 ADMIN_NAME = "test_admin_ci"
 ADMIN_PASS = "Admin#123456"
@@ -37,7 +37,7 @@ def _shutdown():
 
 # 注意：通过 _portal.call 调用时，此方法在应用事件循环中执行
 async def _ensure_admin():
-    from app.db.session import async_session
+    from app.cmn.session import async_session
     async with async_session() as db:  # type: ignore
         res = await db.execute(
             select(User).where(User.name == ADMIN_NAME).where(User.deleted_at.is_(None))

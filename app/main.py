@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
-from app.router.user import router as user_router
-from app.router.examination import router as exam_router
-from app.router.question import router as question_router
+from app.user.view import router as user_router
+from app.exam.view import router as exam_router
+from app.question.view import router as question_router
 from contextlib import asynccontextmanager
 from app.config import get_settings
-from app.db.base import Base
-from app.db.session import engine
-from app.db.redis import init_redis, close_redis
+from app.cmn.base import Base
+from app.cmn.session import engine
+from app.cmn.redis import init_redis, close_redis
 
 
 settings = get_settings()

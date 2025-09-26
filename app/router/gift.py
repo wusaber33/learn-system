@@ -7,9 +7,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
 
-from app.db.session import get_db
-from app.db.db import UserGiftRecord
-from app.db.redis import get_redis
+from app.cmn.session import get_db
+from app.cmn.db import UserGiftRecord
+from app.cmn.redis import get_redis
 
 router = APIRouter(prefix="/gift", tags=["gift"])
 

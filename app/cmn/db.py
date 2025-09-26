@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
 from sqlalchemy.orm import relationship
-from app.db.base import Base
+from app.cmn.base import Base
 from typing import Optional
 
 
